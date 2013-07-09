@@ -107,7 +107,7 @@ class _SingleJob(_JobControl):
             return '?' + '&'.join(query) if query else ''
 
         # TODO: token instead of None?
-        url = self.job.get_build_triggerurl(None, params=self.params if params else None)
+        url = self.job.get_build_triggerurl()
         if isinstance(url, tuple):
             # Newer versions of jenkinsapi returns tuple (path, {args})
             # Insert ' - ' so that the build URL is not directly clickable, but will instead point to the job
@@ -116,7 +116,7 @@ class _SingleJob(_JobControl):
         else:
             # Older versions of jenkinsapi return real URL
             import urlparse
-            up = urlparse.urlparse(self.job.get_build_triggerurl(None, params=self.params))
+            up = urlparse.urlparse(url)
             # Insert ' - ' so that the build URL is not directly clickable, but will instead point to the job
             path = up.path.replace(self.job.name, self.job.name + ' - ')
             params = ';' + up.params if up.params else ''
@@ -140,7 +140,7 @@ class _SingleJob(_JobControl):
 
     def _check(self, start_time, last_report_time):
         if not self._invoke_if_not_invoked():
-            self.job.invoke(securitytoken=self.securitytoken, invoke_pre_check_delay=0, block=False, params=self.params if self.params else None)
+            self.job.invoke(securitytoken=self.securitytoken, invoke_pre_check_delay=0, block=False, build_params=self.params if self.params else None)
 
         self.job.poll()
         build = self.job.get_last_build_or_none()
@@ -166,6 +166,70 @@ class _SingleJob(_JobControl):
 
     def sequence(self):
         return self.job.name
+
+class _DelayedSingleJob(_JobControl):
+    def __init__(self, jenkins_api, securitytoken, job_name_prefix, job_name, params, report_interval, secret_params_re, nesting_level):
+        self.job_name_prefix = job_name_prefix
+        self.job_name = job_name
+        self.jenkins_api = jenkins_api
+        self.params = params
+        super(_DelayedSingleJob, self).__init__(securitytoken, 1, 1, report_interval, secret_params_re, nesting_level)
+        self.total_max_tries = 1
+
+        # Build repr string with build-url with secret params replaced by '***'
+        def build_query():
+            query = [key + '=' + (value if not self.secret_params_re.search(key) else '******') for key, value in self.params.iteritems()]
+            return '?' + '&'.join(query) if query else ''
+
+        self.repr_str = repr(self.job_name) + ' is delayed job'
+
+    def __repr__(self):
+        return self.repr_str
+
+    def _print_status_message(self, build):
+        state = "RUNNING" if self.job.is_running() else ("QUEUED" if self.job.is_queued() else "IDLE")
+        print repr(self.job.name), "Status", state, "- latest build:", build
+
+    def _prepare_to_invoke(self, queuing=False):
+        super(_DelayedSingleJob, self)._prepare_to_invoke(queuing)
+        if queuing:
+            print self.indentation + "Queuing job:", self.job_name
+
+    def _check(self, start_time, last_report_time):
+        if not self._invoke_if_not_invoked():
+            full_job_name = self.job_name_prefix + self.job_name
+            while full_job_name not in self.jenkins_api:
+                print 'Waiting for job to appear in Jenkins...'
+                self.jenkins_api.poll()
+            # print self.jenkins_api._data
+            # print self.jenkins_api._data
+            self.job = self.jenkins_api.get_job(full_job_name)
+            self.job.invoke(securitytoken=self.securitytoken, invoke_pre_check_delay=0, block=False, build_params=self.params if self.params else None)
+
+        self.job.poll()
+        build = self.job.get_last_build_or_none()
+        if build == None:
+            return last_report_time
+
+        # old_buildno = (self.old_build.buildno if self.old_build else None)
+        # if build.buildno == old_buildno or build.is_running():
+        #     now = time.time()
+        #     if now - last_report_time >= self.report_interval:
+        #         self._print_status_message(build)
+        #         last_report_time = now
+        #     return last_report_time
+
+        # The job has stopped running
+        self._print_status_message(build)
+        print str(build.get_status()) + ":", repr(self.job.name), "- build: ", build.get_result_url(), self._time_msg(start_time)
+
+        if build.is_good():
+            self.successful = True
+            return last_report_time
+        raise FailedSingleJobException(self.job)
+
+    def sequence(self):
+        return self.job_name
 
 
 class _IgnoredSingleJob(_SingleJob):
@@ -221,7 +285,11 @@ class _Flow(_JobControl):
         self.jobs.append(job)
 
     def invoke_unchecked(self, job_name, **params):
-        job = _IgnoredSingleJob(self.api, self.job_name_prefix, job_name, params, self.report_interval, self.secret_params_re, self.nesting_level)
+        job = _IgnoredSingleJob(self.api, self.securitytoken, self.job_name_prefix, job_name, params, self.report_interval, self.secret_params_re, self.nesting_level)
+        self.jobs.append(job)
+
+    def invoke_delayed(self, job_name, **params):
+        job = _DelayedSingleJob(self.api, self.securitytoken, self.job_name_prefix, job_name, params, self.report_interval, self.secret_params_re, self.nesting_level)
         self.jobs.append(job)
 
     def _check_timeout(self, start_time):
