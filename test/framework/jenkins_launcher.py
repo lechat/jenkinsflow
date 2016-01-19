@@ -22,7 +22,7 @@ from jenkinsflow.jenkins_api import Jenkins
 
 logging.basicConfig()
 log = logging.getLogger(__name__)
-log.setLevel(logging.INFO)
+# log.setLevel(logging.INFO)
 
 
 class FailedToStart(Exception):
