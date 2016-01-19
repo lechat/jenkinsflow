@@ -20,6 +20,7 @@ sys.path = extra_sys_path + sys.path
 os.environ['PYTHONPATH'] = ':'.join(extra_sys_path)
 
 from jenkinsflow.test.framework import config
+from jenkinsflow.test.framework.jenkins_launcher import JenkinsLancher
 from jenkinsflow.test import cfg as test_cfg
 from jenkinsflow.test.cfg import ApiType
 
@@ -75,7 +76,7 @@ def start_msg(*msg):
 
 @click.command()
 @click.option('--mock-speedup', '-s', help="Time speedup when running mocked tests.", default=1000)
-@click.option('--direct-url', help="Direct Jenkins URL. Must be different from the URL set in Jenkins (and preferably non proxied)", default=test_cfg.direct_url())
+@click.option('--direct-url', help="Direct Jenkins URL. Must be different from the URL set in Jenkins (and preferably non proxied)")
 @click.option('--pytest-args', help="py.test arguments.")
 @click.option('--job-delete/--no-job-delete', help="Delete and re-load jobs into Jenkins. Default is --no-job-delete.", default=False)
 @click.option('--job-load/--no-job-load', help="Load jobs into Jenkins (skipping job load assumes all jobs already loaded and up to date). Deafult is --job-load.", default=True)
@@ -91,6 +92,14 @@ def cli(mock_speedup, direct_url, pytest_args, job_delete, job_load, testfile):
 
     [TESTFILE]... File names to pass to py.test
     """
+
+    we_started_jenkins = False
+    if not direct_url:
+        launcher = JenkinsLancher(war_path='/tmp/jenkinsflow-test/jenkins/jenkins.war')
+        launcher.update_war()
+        launcher.start()
+        we_started_jenkins = True
+        direct_url = os.environ['JENKINS_URL']
 
     test_cfg.mock(mock_speedup)
     os.environ[test_cfg.DIRECT_URL_NAME] = direct_url
@@ -152,6 +161,8 @@ def cli(mock_speedup, direct_url, pytest_args, job_delete, job_load, testfile):
         print('*** ERROR: There were errors! Check output! ***', repr(ex), file=sys.stderr)
         raise
 
+    if we_started_jenkins:
+        launcher.stop()
     sys.exit(rc)
 
 
